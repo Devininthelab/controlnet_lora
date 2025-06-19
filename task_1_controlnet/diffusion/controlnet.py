@@ -95,6 +95,7 @@ class ControlNetOutput(BaseOutput):
 
 class ControlNetConditioningEmbedding(nn.Module):
     """
+    This is the small network that encodes the image-based conditions (e.g., edge, depth, etc.) into a feature map.
     Quoting from https://arxiv.org/abs/2302.05543: "Stable Diffusion uses a pre-processing method similar to VQ-GAN
     [11] to convert the entire dataset of 512 × 512 images into smaller 64 × 64 “latent images” for stabilized
     training. This requires ControlNets to convert image-based conditions to 64 × 64 feature space to match the
@@ -111,7 +112,7 @@ class ControlNetConditioningEmbedding(nn.Module):
     ):
         super().__init__()
 
-        self.conv_in = nn.Conv2d(conditioning_channels, block_out_channels[0], kernel_size=3, padding=1)
+        self.conv_in = nn.Conv2d(conditioning_channels, block_out_channels[0], kernel_size=3, padding=1) # same size after conv
 
         self.blocks = nn.ModuleList([])
 

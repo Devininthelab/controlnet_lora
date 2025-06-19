@@ -41,3 +41,6 @@ opencv-python
 pyrallis
 wandb
 ipykernel
+jupyterlab
+notebook
+ipykernel
