@@ -264,7 +264,7 @@ class UNet2DConditionModel(
             in_channels, block_out_channels[0], kernel_size=conv_in_kernel, padding=conv_in_padding
         )
 
-        # time
+        # time embedding
         time_embed_dim, timestep_input_dim = self._set_time_proj(
             time_embedding_type,
             block_out_channels=block_out_channels,
@@ -349,7 +349,7 @@ class UNet2DConditionModel(
         else:
             blocks_time_embed_dim = time_embed_dim
 
-        # down
+        # down blocks
         output_channel = block_out_channels[0]
         for i, down_block_type in enumerate(down_block_types):
             input_channel = output_channel
@@ -1048,8 +1048,8 @@ class UNet2DConditionModel(
         attention_mask: Optional[torch.Tensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
-        down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
-        mid_block_additional_residual: Optional[torch.Tensor] = None,
+        down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None, # THIS IS TO BE ADDED FROM CONTROLNET
+        mid_block_additional_residual: Optional[torch.Tensor] = None, # THIS IS TO BE ADDED FROM CONTROLNET
         down_intrablock_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
@@ -1079,9 +1079,9 @@ class UNet2DConditionModel(
             added_cond_kwargs: (`dict`, *optional*):
                 A kwargs dictionary containing additional embeddings that if specified are added to the embeddings that
                 are passed along to the UNet blocks.
-            down_block_additional_residuals: (`tuple` of `torch.Tensor`, *optional*):
+            down_block_additional_residuals: (`tuple` of `torch.Tensor`, *optional*): ### THIS IS TO BE ADDED FROM CONTROLNET
                 A tuple of tensors that if specified are added to the residuals of down unet blocks.
-            mid_block_additional_residual: (`torch.Tensor`, *optional*):
+            mid_block_additional_residual: (`torch.Tensor`, *optional*):   ### THIS IS TO BE ADDED FROM CONTROLNET
                 A tensor that if specified is added to the residual of the middle unet block.
             down_intrablock_additional_residuals (`tuple` of `torch.Tensor`, *optional*):
                 additional residuals to be added within UNet down blocks, for example from T2I-Adapter side model(s)
@@ -1235,7 +1235,8 @@ class UNet2DConditionModel(
         # DO NOT change the code outside this part.
         # Add the residual features from the ControlNet block to 'down_block_res_samples'.
         if is_controlnet:
-            pass
+            for controlnet_residual in down_block_additional_residuals:
+                down_block_res_samples += (controlnet_residual,)
         ######## TODO (4-1) ########
 
         # 4. mid
@@ -1264,7 +1265,8 @@ class UNet2DConditionModel(
             ######## TODO (4-2) ########
             # DO NOT change the code outside this part.
             # Add the residual features from the ControlNet block to 'sample'.
-            pass
+            
+            sample += mid_block_additional_residual
             ######## TODO (4-2) ########
 
         # 5. up
