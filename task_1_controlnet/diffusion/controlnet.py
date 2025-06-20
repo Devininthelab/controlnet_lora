@@ -95,6 +95,9 @@ class ControlNetOutput(BaseOutput):
 
 class ControlNetConditioningEmbedding(nn.Module):
     """
+    Encodes conditional inputs into feature maps. Take in a conditioning image (e.g., edge, depth, etc.) and
+    encodes it into a feature map that matches the UNet's downsampling blocks.
+    
     This is the small network that encodes the image-based conditions (e.g., edge, depth, etc.) into a feature map.
     Quoting from https://arxiv.org/abs/2302.05543: "Stable Diffusion uses a pre-processing method similar to VQ-GAN
     [11] to convert the entire dataset of 512 × 512 images into smaller 64 × 64 “latent images” for stabilized
@@ -143,6 +146,8 @@ class ControlNetConditioningEmbedding(nn.Module):
 class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     """
     A ControlNet model.
+    Defines the input layer, time embedding, down blocks and mid blocks.
+    Add zeros-convolution layers for processing residual features
 
     Args:
         in_channels (`int`, defaults to 4):
@@ -272,7 +277,7 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if isinstance(transformer_layers_per_block, int):
             transformer_layers_per_block = [transformer_layers_per_block] * len(down_block_types)
 
-        # input
+        # Input layer, for taking the image and feed it to the network
         conv_in_kernel = 3
         conv_in_padding = (conv_in_kernel - 1) // 2
 
@@ -282,7 +287,7 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             padding=conv_in_padding
         )
 
-        # time
+        # Create time step then time step embedding
         time_embed_dim = block_out_channels[0] * 4
         self.time_proj = Timesteps(block_out_channels[0], flip_sin_to_cos, freq_shift)
         timestep_input_dim = block_out_channels[0]
@@ -324,15 +329,17 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # class embedding
         self.class_embedding = None
 
-        # control net conditioning embedding
+        # control net conditioning embedding: take in the conditioning image and encode it into a feature map
         self.controlnet_cond_embedding = ControlNetConditioningEmbedding(
             conditioning_embedding_channels=block_out_channels[0],
             block_out_channels=conditioning_embedding_out_channels,
             conditioning_channels=conditioning_channels,
         )
 
+        # the down_blocks is taken from the UNET
+        # then control_net_down_blocks is taking the zero conv only
         self.down_blocks = nn.ModuleList([])
-        self.controlnet_down_blocks = nn.ModuleList([])
+        self.controlnet_down_blocks = nn.ModuleList([]) # for adding the zero conv 
 
         if isinstance(only_cross_attention, bool):
             only_cross_attention = [only_cross_attention] * len(down_block_types)
@@ -427,6 +434,7 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
     ):
         r"""
         Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
+        For copying weights + setup
 
         Parameters:
             unet (`UNet2DConditionModel`):
@@ -463,11 +471,27 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             conditioning_embedding_out_channels=conditioning_embedding_out_channels,
             conditioning_channels=conditioning_channels,
         )
-
+        ## These layers will be loaded from the UNet model
         ######## TODO (2) ########
         # DO NOT change the code outside this part.
         # Initialize 'controlnet' using the pretrained 'unet' model
         # NOTE: Modules to initialize: 'conv_in', 'time_proj', 'time_embedding', 'down_blocks', 'mid_block'
+        
+        # Copy weights for conv_in
+        controlnet.conv_in.load_state_dict(unet.conv_in.state_dict())
+
+        # Copy weights for time_proj
+        controlnet.time_proj.load_state_dict(unet.time_proj.state_dict())
+
+        # Copy weights for time_embedding
+        controlnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
+
+        # Copy weights for down_blocks
+        for i, (controlnet_block, unet_block) in enumerate(zip(controlnet.down_blocks, unet.down_blocks)):
+            controlnet_block.load_state_dict(unet_block.state_dict())
+
+        # Copy weights for mid_block
+        controlnet.mid_block.load_state_dict(unet.mid_block.state_dict())
 
         ######## TODO (2) ########
 
@@ -621,10 +645,10 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
     def forward(
         self,
-        sample: torch.Tensor,
-        timestep: Union[torch.Tensor, float, int],
-        encoder_hidden_states: torch.Tensor,
-        controlnet_cond: torch.Tensor,
+        sample: torch.Tensor, # z
+        timestep: Union[torch.Tensor, float, int], # t
+        encoder_hidden_states: torch.Tensor, # text condition c_t 
+        controlnet_cond: torch.Tensor, # c_f
         conditioning_scale: float = 1.0,
         class_labels: Optional[torch.Tensor] = None,
         timestep_cond: Optional[torch.Tensor] = None,
@@ -685,7 +709,7 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
             attention_mask = attention_mask.unsqueeze(1)
 
-        # 1. time
+        # 1. Embedding the time information
         timesteps = timestep
         if not torch.is_tensor(timesteps):
             # This would be a good case for the `match` statement (Python 3.10+)
@@ -713,8 +737,8 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
 
         # 2. Pre-process
         sample = self.conv_in(sample)
-
-        controlnet_cond = self.controlnet_cond_embedding(controlnet_cond)
+        # There is a zero convolution as the last layer if the self.controlnet_cond_embedding, so no need to use the zero convolution here
+        controlnet_cond = self.controlnet_cond_embedding(controlnet_cond) # put through the small network first for process the conditioning image
         sample = sample + controlnet_cond
 
         # -------------------- 4. Down Blocks -------------------- #
@@ -730,9 +754,9 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
             else:
-                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+                sample, res_samples = downsample_block(hidden_states=sample, temb=emb) # return samples and residuals for later processing 
 
-            down_block_res_samples += res_samples
+            down_block_res_samples += res_samples  # add residual to the list
         # --------------------------------------------------------- #
 
         # -------------------- 4. Mid Block -------------------- #
@@ -754,8 +778,17 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # Apply zero-convolution to the residual features of each ControlNet block.
         # NOTE: Each 'controlnet_block' is used here.
 
-        down_block_res_samples = None
-        mid_block_res_sample = None
+        # Process down block residuals
+        processed_down_block_res_samples = []
+        for i, (res_sample, controlnet_block) in enumerate(zip(down_block_res_samples, self.controlnet_down_blocks)):
+            processed_sample = controlnet_block(res_sample) # push through the zero convolution
+            processed_down_block_res_samples.append(processed_sample)
+
+        # Process mid block residual
+        mid_block_res_sample = self.controlnet_mid_block(sample)
+
+        # Set the processed samples to be returned
+        down_block_res_samples = processed_down_block_res_samples
 
         ######## TODO (3) ########
 
@@ -767,6 +800,6 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (down_block_res_samples, mid_block_res_sample)
 
         return ControlNetOutput(
-            down_block_res_samples=down_block_res_samples, 
+            down_block_res_samples=down_block_res_samples, # residuals for put thorugh Upblocks
             mid_block_res_sample=mid_block_res_sample
         )
