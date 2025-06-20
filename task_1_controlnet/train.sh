@@ -17,4 +17,4 @@ accelerate launch train.py \
 --use_8bit_adam \
 --checkpoints_total_limit 2 \
 --validation_steps 100 \
---report_to "tensorboard"
+--report_to "wandb"

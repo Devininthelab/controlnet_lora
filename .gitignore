@@ -8,3 +8,5 @@ task_2_lora/runs
 __pycache__/
 *.py[cod]
 *$py.class
+
+wandb/

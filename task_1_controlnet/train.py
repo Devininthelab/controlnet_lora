@@ -24,6 +24,7 @@ import os
 import random
 import shutil
 from pathlib import Path
+from datetime import datetime
 
 import accelerate
 import numpy as np
@@ -63,6 +64,12 @@ if is_wandb_available():
     import wandb
 
 logger = get_logger(__name__)
+
+def get_time():
+    """
+    Returns the current time in the format YYYY-MM-DD_HH-MM-SS.
+    """
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 def log_validation(
     vae, text_encoder, tokenizer, unet, controlnet, 
@@ -474,6 +481,11 @@ def parse_args(input_args=None):
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default="ControlNet"
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -531,7 +543,7 @@ def collate_fn(examples):
     }
 
 # ------------------------------ Main ------------------------------ #
-def main(args):
+def main(args): 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(
@@ -545,6 +557,16 @@ def main(args):
         log_with=args.report_to,
         project_config=accelerator_project_config,
     )
+
+    if "wandb" in args.report_to and accelerator.is_main_process:
+        if is_wandb_available():
+            wandb.init(
+                project=args.tracker_project_name,
+                config=vars(args),
+                name=f"{args.run_name}_{get_time()}",
+            )
+        else:
+            raise ImportError("wandb is not installed. Install it with `pip install wandb`.")
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -614,6 +636,7 @@ def main(args):
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
+    # We train the controlnet only
     controlnet.train()
 
     if args.gradient_checkpointing:
@@ -882,6 +905,22 @@ def main(args):
                             global_step,
                             save_dir=os.path.join(args.output_dir, "validation")
                         )
+                        # Only log validation images from the main process
+                        if "wandb" in args.report_to and accelerator.is_main_process:
+                            formatted_images = []
+                            
+                            for log in image_logs:
+                                images = log["images"]
+                                validation_prompt = log["validation_prompt"]
+                                validation_image = log["validation_image"]
+                                
+                                formatted_images.append(wandb.Image(validation_image, caption="ControlNet Conditioning"))
+                                
+                                for image in images:
+                                    image = wandb.Image(image, caption=validation_prompt)
+                                    formatted_images.append(image)
+                            
+                            wandb.log({"validation_images": formatted_images}, step=global_step)
 
             logs = {
                 "loss": loss.detach().item(), 
@@ -889,6 +928,9 @@ def main(args):
             }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
+            # Only log to WandB from the main process
+            if "wandb" in args.report_to and accelerator.is_main_process:
+                wandb.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
