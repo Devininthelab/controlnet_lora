@@ -74,12 +74,12 @@ def log_validation(
     )
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
-    generator = torch.Generator(device=accelerator.device)
+    generator = torch.Generator(device=accelerator.device) # for setting seed 
     if args.seed is not None:
         generator = generator.manual_seed(args.seed)
     images = []
 
-    if torch.backends.mps.is_available():
+    if torch.backends.mps.is_available(): # for mps backend in macOS, no need for care here
         autocast_ctx = nullcontext()
     else:
         autocast_ctx = torch.autocast(accelerator.device.type)

@@ -17,4 +17,5 @@ accelerate launch --mixed_precision="no" train_lora.py \
   --lr_warmup_steps=0 \
   --seed=42 \
   --checkpoints_total_limit 2 \
-  --validation_prompt="a house"
+  --validation_prompt="a house" \
+  --report_to="wandb" \
